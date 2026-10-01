@@ -19,6 +19,15 @@ phylogenetic placement to confirm gene identity — simplified for genes that
 exist in only one or two copies per genome, where you don't need tandem-array
 rescue logic, dedicated multi-pass miniprot runs, or family-specific filters.
 
+> **Everything this pipeline outputs is a candidate, not a finished
+> annotation.** It tells you where a plausible gene model is and whether it
+> places inside your target gene's clade or looks suspect — it does not
+> replace looking at the alignment and the tree yourself before trusting a
+> sequence, especially anything the pipeline flagged `AMBIGUOUS`,
+> `OUTGROUP_SUSPECT`, or `long_branch_suspect=True`. See
+> [§9](#9-reading-the-output-candidates-not-final-annotations) before using
+> any sequence downstream.
+
 ---
 
 ## 1. Installation
@@ -46,7 +55,7 @@ Three files describe the gene you want to mine, plus a gene name:
 | `--reference_tree FILE` | The FastTree newick tree built from `reference_alignment`. The pipeline doesn't actually place candidates onto this fixed tree (see step 6 below) — it exists so the pipeline can **sanity-check that your three reference files agree with each other** before doing any real work (same leaf set in the alignment and tree, `reference_proteins` fully contained in the alignment). |
 | `--gene_name NAME` | A short label used in output file/directory names and as the ingroup clade label in reports. |
 
-See [§7](#7-building-your-own-reference-set-for-a-new-gene) for how the
+See [§8](#8-building-your-own-reference-set-for-a-new-gene) for how the
 bundled SI/ADAG example was built — the same recipe generalizes to any gene.
 
 ---
@@ -105,7 +114,86 @@ can simply be relaunched, and writes a combined
 
 ---
 
-## 4. Full option reference
+## 4. Running on a cluster with no internet on compute/login nodes (e.g. GWDG)
+
+Many HPC clusters only allow outbound internet access (needed to download a
+genome, or to let `mine_gene.sh` auto-resolve `--ncbi_accession`) from the
+**login node**, not from compute nodes reached via `srun`/`sbatch`. On these
+clusters you cannot use `--ncbi_accession` directly in a compute job — download
+the genome by hand on the login node first, then point `mine_gene.sh` at the
+local file with `-g` (which never needs internet).
+
+### Step 1 — on the login node: download the genome
+
+```bash
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/027/791/375/GCF_027791375.1_UM_Iind_1.1/GCF_027791375.1_UM_Iind_1.1_genomic.fna.gz
+gzip -d GCF_027791375.1_UM_Iind_1.1_genomic.fna.gz
+mkdir -p results/genomes_cache
+mv GCF_027791375.1_UM_Iind_1.1_genomic.fna results/genomes_cache/
+```
+
+(Build the URL from the accession the same way NCBI's own FTP layout does:
+`genomes/all/<GCA|GCF>/<first 3 digits>/<next 3>/<next 3>/<accession>_<assembly name>/`.
+The assembly name is in the directory listing, or in `*_assembly_report.txt`.)
+
+### Step 2 — request a compute node
+
+Interactively:
+
+```bash
+srun \
+  --account=<your_slurm_account> \
+  --partition=<a_cpu_partition> \
+  --nodes=1 \
+  --cpus-per-task=8 \
+  --mem=50G \
+  --pty bash
+```
+
+(`--mem=50G` is comfortable headroom for indexing a ~1 GB bird genome with
+both miniprot passes running — see §6 step 2's memory note. Scale up for
+larger genomes.)
+
+### Step 3 — on the compute node: run the pipeline against the local genome
+
+```bash
+conda activate gene_miner_env
+
+bash mine_gene.sh \
+    --reference_proteins example_data/SI_ADAG/SI_ADAG_references.prot \
+    --reference_alignment example_data/SI_ADAG/SI_ADAG.templatealignment.outgroup.prot.aln \
+    --reference_tree example_data/SI_ADAG/SI_ADAG.templatealignment.outgroup.prot.aln.treefile \
+    --gene_name SI_ADAG \
+    -g results/genomes_cache/GCF_027791375.1_UM_Iind_1.1_genomic.fna -s Indicator_indicator \
+    -o results/ -t 8
+```
+
+`-s`/`--species` is required here since there's no accession for the
+pipeline to resolve the organism name from.
+
+**Alternative: submit as a batch job instead of an interactive `srun`.**
+Wrap the same `mine_gene.sh` call (step 3) in a job script and `sbatch` it —
+just don't forget to `conda activate gene_miner_env` inside the script
+itself, before the `bash mine_gene.sh ...` line, since a batch job doesn't
+inherit your interactive shell's environment.
+
+### Step 4 — clean up the genome index afterward
+
+The miniprot index (`genome.mpi`, several GB) is kept after the run so a
+second gene can reuse it without rebuilding. Once you're done mining every
+gene you need from this genome, delete it to reclaim disk space:
+
+```bash
+# when using -g without --ncbi_accession, the index lives per-species:
+rm results/SI_ADAG/Indicator_indicator.GCF_027791375.1_UM_Iind_1.1_genomic/genome.mpi
+
+# when using --ncbi_accession, it's shared in the cache instead:
+rm results/genomes_cache/<ACCESSION>.mpi
+```
+
+---
+
+## 5. Full option reference
 
 ```
 mine_gene.sh --reference_proteins FILE --reference_alignment FILE \
@@ -130,7 +218,7 @@ mine_gene.sh --reference_proteins FILE --reference_alignment FILE \
 
 ---
 
-## 5. Pipeline steps
+## 6. Pipeline steps
 
 ```
   reference_proteins / reference_alignment / reference_tree
@@ -154,7 +242,9 @@ mine_gene.sh --reference_proteins FILE --reference_alignment FILE \
                        ▼
   2. miniprot --index
      Build the genome's miniprot index once (also cached in
-     genomes_cache/ by accession).
+     genomes_cache/ by accession). Needs roughly 8-10x the genome's
+     uncompressed size in RAM (a ~1.1 GB bird genome peaked at ~10 GB RSS
+     in testing) -- request memory accordingly on a cluster (see §4).
                        │
                        ▼
   3. miniprot (protein-to-genome spliced alignment), two passes
@@ -176,7 +266,7 @@ mine_gene.sh --reference_proteins FILE --reference_alignment FILE \
      redundancy between them. Skip pass 2 with --skip-permissive-pass if
      you know your gene is strictly single-copy and want the faster run —
      expect roughly 2-5x longer runtime with it on, and more candidate
-     loci to review (see §8).
+     loci to review (see §10).
                        │
                        ▼
   4. parse_miniprot_gff.py
@@ -238,7 +328,7 @@ them disappear.
 
 ---
 
-## 6. Output layout
+## 7. Output layout
 
 ```
 OUTDIR/
@@ -266,7 +356,7 @@ dist_to_outgroup`.
 
 ---
 
-## 7. Building your own reference set for a new gene
+## 8. Building your own reference set for a new gene
 
 This is how the bundled SI/ADAG example was built — the same recipe applies
 to any other gene:
@@ -295,7 +385,43 @@ You now have your `--reference_proteins` (pre-outgroup FASTA),
 
 ---
 
-## 8. Known limitations
+## 9. Reading the output: candidates, not final annotations
+
+Every sequence in `*.summary.tsv` / `*.cds.fa` / `*.prot.fa` is a **candidate
+gene model**, not a confirmed, publication-ready gene. `functional_call`,
+`clade_call` and the suspect flags are there to triage *which* candidates
+need a closer look and roughly how urgently — they are not a substitute for
+actually looking.
+
+**Before trusting a sequence, at minimum:**
+
+1. **Look at where it falls in the tree**, not just the summary table's
+   `clade_call` column. The tree itself is the real evidence; the column is
+   just our attempt to summarize it into one word. It's written to
+   `tmp/placed.aln.treefile` (Newick — open it in
+   [FigTree](https://github.com/rambaut/figtree/), `ete3`, iTOL, or any
+   tree viewer) alongside `tmp/placed.aln`, the alignment it was built from.
+   This is exactly why `--clean-tmp` deletes `tmp/` only after you're done
+   inspecting a run — don't use it until you've checked the tree.
+2. **Always check anything flagged `AMBIGUOUS(...)`, `OUTGROUP_SUSPECT`, or
+   `long_branch_suspect=True`** — these are the pipeline telling you it
+   isn't confident, most often because of the permissive second miniprot
+   pass surfacing a distant, unrelated homologue (see §10).
+3. **Treat `functional_partial` as "probably real but incomplete"**, not
+   "broken." It usually means the locus continues past the end of whichever
+   reference protein produced the best-scoring alignment there (see §10),
+   not that the gene itself is truncated in the genome — worth extending
+   the search region or checking the raw genomic sequence by hand.
+
+**Manually curating a candidate into a finished gene model** (extending
+exon boundaries, resolving an ambiguous splice site, correcting a probable
+assembly error, etc.) is a separate step this pipeline doesn't attempt —
+if you're unsure how to do this, ask Jinseok, since the manual curation
+conventions used for this project aren't written down here (yet).
+
+---
+
+## 10. Known limitations
 
 - **Tandem duplicates close together.** `dedup_loci.py` merges gene models
   within `--merge-dist` (default 5 kb) into a single locus and keeps only
@@ -311,7 +437,7 @@ You now have your `--reference_proteins` (pre-outgroup FASTA),
   pseudogenes — the tree placement step is what actually confirms or
   rejects a candidate, and it's cheap to run on a few extra loci.
 - **The permissive second pass trades extra sensitivity for extra noise.**
-  It's what makes a genuine secondary paralogue (see §5, step 3) detectable
+  It's what makes a genuine secondary paralogue (see §6, step 3) detectable
   at all, but on a genome with no such paralogue it will often also surface
   a handful of distant, unrelated homologues (e.g. a different gene in the
   same broader enzyme family, or a processed pseudogene fragment) that
