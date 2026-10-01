@@ -1,0 +1,12 @@
+# pipeline run outputs / caches (not part of the pipeline itself)
+results/
+genomes_cache/
+*.mpi
+*.fa
+*.fna
+*.fa.fai
+tmp/
+
+# OS / editor cruft
+.DS_Store
+*.swp

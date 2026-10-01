@@ -1,0 +1,15 @@
+name: gene_miner_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - biopython
+  - pandas
+  - miniprot
+  - samtools>=1.15
+  - mafft
+  - fasttree
+  - seqkit
+  - curl
