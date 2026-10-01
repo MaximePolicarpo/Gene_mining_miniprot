@@ -358,30 +358,129 @@ kept out of the files you'd use directly.
 
 ## 8. Building your own reference set for a new gene
 
-This is how the bundled SI/ADAG example was built — the same recipe applies
-to any other gene:
+This is the exact recipe used to build the bundled SI/ADAG example, with the
+actual commands — swap in your gene, your clade, and your own sequence
+sources. It assumes `samtools`, `emboss` (for `transeq`), `muscle`, `trimal`
+and `mafft` are available (`muscle`/`trimal` aren't in `environment.yml`
+since they're only needed once, to build a reference set, not at mining
+time — `conda install -c bioconda muscle trimal` or similar).
 
-1. **Collect a reference CDS set.** Gather CDS sequences for your gene (and
-   any close in-group paralogue you want to detect alongside it) across the
-   clade you're mining — ideally one annotated ortholog per species from
-   existing genome annotations.
-2. **Filter out truncated annotations.** Pick a well-annotated reference
-   species (e.g. chicken for birds) and keep only sequences that are at
-   least ~80% of its CDS length, to drop obviously fragmentary gene models
-   before they contaminate your miniprot query set.
-3. **Translate** the filtered CDS to protein (e.g. EMBOSS `transeq`).
-4. **Build the template alignment.** Align a representative subset with
-   `muscle`/`mafft`, trim it (e.g. `trimal -gt 0.7`), then add the remaining
-   sequences on top with `mafft --add --keeplength` so the trimmed column
-   set is preserved.
-5. **Add an outgroup.** `mafft --add` a handful of related but clearly
-   distinct sequences (e.g. a different paralogue, or orthologs from a
-   distantly related outgroup clade) purely to root the tree. These do
-   *not* go into `reference_proteins` — only into the alignment.
-6. **Build the tree:** `FastTree < alignment.aln > alignment.aln.treefile`.
+### 8.1 Collect candidate reference CDS sequences
 
-You now have your `--reference_proteins` (pre-outgroup FASTA),
-`--reference_alignment` and `--reference_tree`.
+Gather CDS sequences for your gene across the clade you're mining, plus any
+close in-group paralogue you also want to detect (for SI/ADAG, both genes
+went through this pipeline together). RefSeq annotations are the easiest
+source — for birds, that meant pulling the RefSeq `rna.fna`/CDS sequences
+annotated for this gene across every available RefSeq bird genome (NCBI's
+[Orthologs](https://www.ncbi.nlm.nih.gov/gene/) view for a model species'
+gene, or a bulk per-gene CDS download across an Entrez/Datasets query, both
+work) into one multi-FASTA, one sequence per species:
+
+```bash
+cat *_rna.fna > all_candidates.cds
+samtools faidx all_candidates.cds
+```
+
+### 8.2 Filter out truncated annotations
+
+RefSeq/automated annotations for a gene this large (SI spans ~45 exons) are
+frequently truncated in draft assemblies. Pick a well-annotated reference
+species for your clade (chicken for birds) and keep only candidates that are
+at least 80% of its CDS length:
+
+```bash
+# extract the reference species' own CDS and get its length
+samtools faidx all_candidates.cds Gallus_gallus_SI_transcript_id > ref.cds
+samtools faidx ref.cds
+REF_LEN=$(cut -f2 ref.cds.fai)
+THRESH=$(awk -v l="$REF_LEN" 'BEGIN{print l*0.8}')
+
+# list and extract every candidate at or above that length
+awk -v t="$THRESH" '$2>=t {print $1}' all_candidates.cds.fai > pass_ids.txt
+samtools faidx all_candidates.cds -r pass_ids.txt > filtered.cds
+```
+
+If you're mining an in-group paralogue alongside the main gene (like ADAG
+alongside SI) and already have a rough phylogenetic split of which candidate
+belongs to which, repeat this filter separately per gene (each against its
+own reference length), then keep the two filtered sets separate for now —
+you'll label them when building the alignment in §8.3.
+
+### 8.3 Translate to protein
+
+```bash
+transeq filtered.cds filtered.prot
+sed -i 's/_1$//' filtered.prot   # transeq appends _1 to every header; strip it
+```
+
+If you have two gene sets (e.g. SI and ADAG), prefix each header so they
+stay identifiable once merged — `sed 's/^>/>SI---/' SI_filtered.prot`,
+`sed 's/^>/>ADAG---/' ADAG_filtered.prot` — then `cat` them together into
+one `reference_proteins.fa`. This labeling is just for your own bookkeeping
+at this stage; the pipeline itself never looks at header prefixes (see §2).
+
+### 8.4 Build a trimmed template alignment, then add everything else
+
+Aligning hundreds of full-length sequences directly tends to produce messy,
+gappy alignments and wastes time re-aligning near-identical sequences from
+closely related species. Instead, align and trim a small representative
+subset first, then add the rest onto that fixed, trimmed column set:
+
+```bash
+# pick ~15 representative sequences per gene, plus your reference species
+grep ">" reference_proteins.fa | grep "^>SI---"   | shuf -n15 | sed 's/>//' > subset.id
+grep ">" reference_proteins.fa | grep "^>ADAG---" | shuf -n15 | sed 's/>//' >> subset.id
+echo "Gallus_gallus_SI_id"   >> subset.id   # always keep your reference species
+echo "Gallus_gallus_ADAG_id" >> subset.id
+sort -u subset.id -o subset.id
+
+xargs samtools faidx reference_proteins.fa < subset.id > subset.prot
+muscle -align subset.prot -output subset.prot.aln
+trimal -in subset.prot.aln -out subset.trimmed.prot.aln -gt 0.7   # drop columns >30% gaps
+
+# add every remaining sequence onto the trimmed alignment without
+# disturbing its columns
+grep ">" reference_proteins.fa | sed 's/>//' | sort -u > all.id
+comm -23 all.id subset.id > remaining.id
+xargs samtools faidx reference_proteins.fa < remaining.id > remaining.prot
+mafft --add remaining.prot --keeplength subset.trimmed.prot.aln > reference_alignment.fa
+```
+
+### 8.5 Add an outgroup
+
+A handful of related-but-clearly-distinct sequences, added purely to root
+the tree — without an outgroup, the tree placement step in §6 has no fixed
+point to tell "nested in your gene's clade" from "nested somewhere else."
+For SI/ADAG this meant the orthologous SI and MGAM (a related paralogue)
+protein sequences from three mammals with good annotations — *Felis catus*,
+*Mus musculus* and *Homo sapiens* — fetched from RefSeq, concatenated into
+one small FASTA, and added the same way as §8.4:
+
+```bash
+mafft --add outgroup.prot --keeplength reference_alignment.fa > reference_alignment.outgroup.fa
+```
+
+These outgroup sequences must **not** be added to `reference_proteins.fa`
+(§8.1-8.3) — the pipeline tells ingroup from outgroup purely by whether a
+sequence is in `reference_proteins` or not (see §2), so putting them in both
+files would make every outgroup sequence register as ingroup instead.
+
+Three or four distantly-related species is normally enough; you don't need
+exhaustive outgroup sampling; you need it reliably on the other side of the
+root, further from your gene's clade than any of your real ingroup
+sequences.
+
+### 8.6 Build the tree
+
+```bash
+FastTree < reference_alignment.outgroup.fa > reference_alignment.outgroup.fa.treefile
+```
+
+You now have your three pipeline inputs: `reference_proteins.fa` (from §8.3,
+pre-outgroup), `reference_alignment.outgroup.fa` (→ `--reference_alignment`)
+and `reference_alignment.outgroup.fa.treefile` (→ `--reference_tree`). Run
+`validate_references.py` (step 0 of §6, or just run `mine_gene.sh` — it's
+called automatically) to confirm the three agree before using them for real.
 
 ---
 
