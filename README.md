@@ -4,21 +4,6 @@ A lightweight pipeline for mining a single-copy gene (or a small family of
 close paralogues, like a gene and its rare in-group duplicate) out of raw
 genome assemblies, built on **miniprot**, **mafft** and **FastTree**.
 
-It was originally written to recover the sucrase-isomaltase gene (**SI**) and
-its rare avian paralogue (**ADAG**) across bird genome assemblies, but the
-pipeline itself is gene-agnostic: point it at any gene by supplying your own
-reference protein set, alignment and tree. The SI/ADAG files are bundled
-under `example_data/` as a worked example.
-
-Design is loosely inspired by
-[Chemoreceptor_mining_miniprot](https://github.com/MaximePolicarpo/Chemoreceptor_mining_miniprot)
-(Policarpo et al.), a much larger pipeline built for multi-hundred-copy
-chemoreceptor repertoires (OR, V1R, V2R, TAAR, T1R, T2R). This pipeline
-reuses the same core idea — miniprot for protein-to-genome spliced alignment,
-phylogenetic placement to confirm gene identity — simplified for genes that
-exist in only one or two copies per genome, where you don't need tandem-array
-rescue logic, dedicated multi-pass miniprot runs, or family-specific filters.
-
 > **Everything this pipeline outputs is a candidate, not a finished
 > annotation.** It tells you where a plausible gene model is and whether it
 > places inside your target gene's clade or looks suspect — it does not
