@@ -157,11 +157,26 @@ mine_gene.sh --reference_proteins FILE --reference_alignment FILE \
      genomes_cache/ by accession).
                        │
                        ▼
-  3. miniprot (protein-to-genome spliced alignment)
-     Align every sequence in reference_proteins against the genome.
-     Because the reference set is usually many closely related homologues
-     (one per species), most of them will hit the *same* true locus —
-     that redundancy is resolved in step 5, not here.
+  3. miniprot (protein-to-genome spliced alignment), two passes
+     Pass 1 (default settings) aligns every sequence in reference_proteins
+     against the genome. Because the reference set is usually many closely
+     related homologues (one per species), most of them will hit the *same*
+     true locus — that redundancy is resolved in step 5, not here. But
+     miniprot's default mode reports, for each query, only its single best
+     hit genome-wide (chains scoring < 70% of that query's top chain are
+     discarded before alignment, and only near-top alignments are output).
+     If a genome carries more than one paralogous copy of the gene at
+     different divergence levels (e.g. a lineage-specific duplication
+     alongside an older, more degraded copy), every query's best hit lands
+     on the strongest copy and a real but weaker-scoring copy is never
+     reported at all — not filtered downstream, simply never emitted.
+     Pass 2 relaxes the chaining ratio and output threshold
+     (-p 0.1 --outs 0.1 -N 50) specifically to recover those secondary
+     loci; both passes' hits are pooled before step 5, which collapses the
+     redundancy between them. Skip pass 2 with --skip-permissive-pass if
+     you know your gene is strictly single-copy and want the faster run —
+     expect roughly 2-5x longer runtime with it on, and more candidate
+     loci to review (see §8).
                        │
                        ▼
   4. parse_miniprot_gff.py
@@ -295,6 +310,18 @@ You now have your `--reference_proteins` (pre-outgroup FASTA),
   low rather than raise it if you're worried about missing divergent
   pseudogenes — the tree placement step is what actually confirms or
   rejects a candidate, and it's cheap to run on a few extra loci.
+- **The permissive second pass trades extra sensitivity for extra noise.**
+  It's what makes a genuine secondary paralogue (see §5, step 3) detectable
+  at all, but on a genome with no such paralogue it will often also surface
+  a handful of distant, unrelated homologues (e.g. a different gene in the
+  same broader enzyme family, or a processed pseudogene fragment) that
+  wouldn't otherwise be reported. These are not false "complete" calls —
+  they reliably come back `AMBIGUOUS(...)` or `OUTGROUP_SUSPECT` with
+  `long_branch_suspect=True` from the tree placement step, so budget for a
+  quick manual look at any locus flagged that way rather than treating every
+  row in `summary.tsv` as confirmed. Use `--skip-permissive-pass` if you'd
+  rather not deal with this and are confident the gene is single-copy in
+  your species set.
 - No stop-codon / start-codon extension is attempted beyond what miniprot's
   own spliced alignment reports; a `functional_partial` call often just
   means the gene continues past the end of whichever reference protein

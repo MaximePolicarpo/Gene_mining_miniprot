@@ -48,6 +48,12 @@
 #   --merge-dist INT               default 5000
 #   --complete-frac FLOAT          default 0.8
 #   --clean-tmp                    delete tmp/ and the genome index when done
+#   --skip-permissive-pass         run only the fast, default-settings miniprot
+#                                   pass. Faster, but will miss a secondary
+#                                   paralogous locus whenever a stronger-
+#                                   scoring copy of the gene exists elsewhere
+#                                   in the same genome (see README, "Known
+#                                   limitations")
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,6 +77,7 @@ MAX_INTRON=200000
 MERGE_DIST=5000
 COMPLETE_FRAC=0.8
 CLEAN_TMP=0
+SKIP_PERMISSIVE_PASS=0
 
 usage() { grep '^# ' "$0" | sed 's/^# \?//'; exit 1; }
 
@@ -90,6 +97,7 @@ while [[ $# -gt 0 ]]; do
         --merge-dist) MERGE_DIST="$2"; shift 2 ;;
         --complete-frac) COMPLETE_FRAC="$2"; shift 2 ;;
         --clean-tmp) CLEAN_TMP=1; shift 1 ;;
+        --skip-permissive-pass) SKIP_PERMISSIVE_PASS=1; shift 1 ;;
         -h|--help) usage ;;
         *) echo "Unknown option: $1" >&2; usage ;;
     esac
@@ -133,7 +141,8 @@ if [[ -n "$ACCESSION" ]]; then
     [[ -z "$GENOME_FA" ]] && GENOME_FA="$RESOLVED_GENOME"
 fi
 
-LABEL="${SPECIES}.${ACCESSION:-$(basename "${GENOME_FA%.*}")}"
+ACCESSION_LABEL="${ACCESSION:-$(basename "${GENOME_FA%.*}")}"
+LABEL="${SPECIES}.${ACCESSION_LABEL}"
 SPDIR="${OUTDIR}/${GENE_NAME}/${LABEL}"
 TMPDIR="${SPDIR}/tmp"
 mkdir -p "$SPDIR" "$TMPDIR"
@@ -154,13 +163,32 @@ else
 fi
 
 ############################################
-# 3. miniprot alignment (reference_proteins as queries)
+# 3. miniprot alignment (reference_proteins as queries), two passes
 ############################################
+# Pass 1 (default miniprot settings) reports, for each query, only its single
+# best hit genome-wide. If a genome carries more than one paralogous copy of
+# the gene at different divergence levels (e.g. a lineage-specific
+# duplication alongside a degraded/truncated copy), every query's best hit
+# lands on the strongest copy and the weaker one is never reported at all --
+# not filtered downstream, simply never emitted by miniprot. Pass 2 relaxes
+# both the chaining secondary/primary ratio (-p) and the output score
+# fraction (--outs) to recover those secondary loci; dedup_loci.py (step 5)
+# then collapses the redundant hits from both passes down to one best model
+# per locus, so merging them here is safe.
 RAW_GFF="${TMPDIR}/raw.gff"
 if [[ ! -s "$RAW_GFF" ]]; then
-    log "Running miniprot (max-intron=${MAX_INTRON})"
+    log "Running miniprot pass 1/2 (default settings, max-intron=${MAX_INTRON})"
     miniprot -t "$THREADS" --gff -G "$MAX_INTRON" \
-        "$MPI" "$REFERENCE_PROTEINS" > "$RAW_GFF" 2> "${TMPDIR}/miniprot.log"
+        "$MPI" "$REFERENCE_PROTEINS" > "${TMPDIR}/raw_pass1.gff" 2> "${TMPDIR}/miniprot_pass1.log"
+
+    if [[ "$SKIP_PERMISSIVE_PASS" -eq 0 ]]; then
+        log "Running miniprot pass 2/2 (permissive: recovers secondary paralogous loci)"
+        miniprot -t "$THREADS" --gff -G "$MAX_INTRON" -p 0.1 --outs=0.1 -N 50 -P P2 \
+            "$MPI" "$REFERENCE_PROTEINS" > "${TMPDIR}/raw_pass2.gff" 2> "${TMPDIR}/miniprot_pass2.log"
+        cat "${TMPDIR}/raw_pass1.gff" "${TMPDIR}/raw_pass2.gff" > "$RAW_GFF"
+    else
+        cp "${TMPDIR}/raw_pass1.gff" "$RAW_GFF"
+    fi
 else
     log "Raw GFF already present: $RAW_GFF"
 fi
@@ -215,7 +243,7 @@ log "Writing final report"
 python3 "${SCRIPT_DIR}/scripts/finalize_report.py" \
     "${TMPDIR}/dedup.meta.tsv" "${TMPDIR}/dedup.cds.fa" "${TMPDIR}/dedup.prot.fa" \
     "${TMPDIR}/tree_classification.tsv" "$REFERENCE_PROTEINS" "$GENE_NAME" \
-    "$SPECIES" "${ACCESSION:-NA}" "${SPDIR}/${LABEL}.${GENE_NAME}" --complete-frac "$COMPLETE_FRAC"
+    "$SPECIES" "$ACCESSION_LABEL" "${SPDIR}/${LABEL}.${GENE_NAME}" --complete-frac "$COMPLETE_FRAC"
 
 if [[ "$CLEAN_TMP" -eq 1 ]]; then
     log "Cleaning up tmp/ (genome index is kept in genomes_cache/ for reuse across genes)"
