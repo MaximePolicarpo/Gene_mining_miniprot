@@ -137,9 +137,26 @@ def main():
         body = prot_seq[:-1] if ends_with_stop else prot_seq
         internal_stops = body.count("*")
 
+        # miniprot's CDS features give the correct genomic span for a locus
+        # even when it contains a frameshift, but a frameshift re-synchronises
+        # the reading frame *within* a single reported CDS block (see
+        # Frameshift= in the GFF) rather than splitting it in two -- naively
+        # translating straight through one therefore produces real amino
+        # acids up to the frameshift point and out-of-frame garbage after it,
+        # almost always hitting a spurious stop codon within a few codons.
+        # Whatever we write here is what later gets aligned onto the
+        # reference alignment and placed on the tree (see dedup_loci.py /
+        # mine_gene.sh step 6), so garbage downstream of a stop would corrupt
+        # that alignment for no benefit -- the classification step already
+        # calls this locus a pseudogene from internal_stops/frameshift alone,
+        # it doesn't need the garbled tail. Keep only the clean prefix up to
+        # (not including) the first stop codon, whether that stop is the
+        # natural end of a normal gene or a premature one in a pseudogene.
+        clean_prot_seq = prot_seq.split("*")[0]
+
         header = f"{mrna_id}"
         cds_out.write(f">{header}\n{cds_seq}\n")
-        prot_out.write(f">{header}\n{prot_seq}\n")
+        prot_out.write(f">{header}\n{clean_prot_seq}\n")
 
         meta_out.write(
             "\t".join(
@@ -148,7 +165,7 @@ def main():
                     [
                         mrna_id, chrom, info["start"], info["end"], strand, info["query"],
                         info["identity"], info["positive"], info["rank"], info["score"],
-                        len(exons_sorted), cds_len, len(prot_seq),
+                        len(exons_sorted), cds_len, len(clean_prot_seq),
                         internal_stops, ends_with_stop, multiple_of_3,
                         info["gff_frameshift"], info["gff_stopcodon"],
                     ],
