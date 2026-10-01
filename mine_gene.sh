@@ -216,6 +216,8 @@ if [[ "$N_LOCI" -le 0 ]]; then
     : > "${SPDIR}/${LABEL}.${GENE_NAME}.summary.tsv"
     : > "${SPDIR}/${LABEL}.${GENE_NAME}.cds.fa"
     : > "${SPDIR}/${LABEL}.${GENE_NAME}.prot.fa"
+    : > "${SPDIR}/${LABEL}.${GENE_NAME}.ambiguous.cds.fa"
+    : > "${SPDIR}/${LABEL}.${GENE_NAME}.ambiguous.prot.fa"
     exit 0
 fi
 

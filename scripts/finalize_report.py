@@ -131,15 +131,28 @@ def main():
         for r in sorted(out_rows, key=lambda r: (r["chrom"], int(r["start"]))):
             out.write("\t".join(str(r[c]) for c in cols) + "\n")
 
-    with open(f"{args.out_prefix}.cds.fa", "w") as cds_out, \
-         open(f"{args.out_prefix}.prot.fa", "w") as prot_out:
-        for r in out_rows:
-            mrna_id = r["mrna_id"]
-            header = f">{r['gene_id']}|{r['clade_call']}|{r['functional_call']}"
-            cds_out.write(f"{header}\n{cds_dict[mrna_id].seq}\n")
-            prot_out.write(f"{header}\n{prot_dict[mrna_id].seq}\n")
+    # Only a confident, unambiguous ingroup call goes in the main FASTA files.
+    # AMBIGUOUS(...)/OUTGROUP_SUSPECT/NOT_IN_TREE calls are real tree-placement
+    # failures, not just low-confidence versions of a real gene -- they go to
+    # a separate file so they don't pollute the main candidate set. They stay
+    # in summary.tsv either way, so nothing is hidden, just kept out of the
+    # sequence files you'd otherwise use directly.
+    confident_rows = [r for r in out_rows if r["clade_call"] == args.gene_name]
+    ambiguous_rows = [r for r in out_rows if r["clade_call"] != args.gene_name]
 
-    print(f"[finalize] Wrote {len(out_rows)} final loci to {args.out_prefix}.{{summary.tsv,cds.fa,prot.fa}}",
+    def write_fasta(rows, cds_path, prot_path):
+        with open(cds_path, "w") as cds_out, open(prot_path, "w") as prot_out:
+            for r in rows:
+                mrna_id = r["mrna_id"]
+                header = f">{r['gene_id']}|{r['clade_call']}|{r['functional_call']}"
+                cds_out.write(f"{header}\n{cds_dict[mrna_id].seq}\n")
+                prot_out.write(f"{header}\n{prot_dict[mrna_id].seq}\n")
+
+    write_fasta(confident_rows, f"{args.out_prefix}.cds.fa", f"{args.out_prefix}.prot.fa")
+    write_fasta(ambiguous_rows, f"{args.out_prefix}.ambiguous.cds.fa", f"{args.out_prefix}.ambiguous.prot.fa")
+
+    print(f"[finalize] Wrote {len(confident_rows)} confident loci to {args.out_prefix}.{{summary.tsv,cds.fa,prot.fa}} "
+          f"and {len(ambiguous_rows)} ambiguous/outgroup loci to {args.out_prefix}.ambiguous.{{cds.fa,prot.fa}}",
           file=sys.stderr)
     for r in out_rows:
         print(f"[finalize]   {r['gene_id']}  clade={r['clade_call']}  call={r['functional_call']}  "

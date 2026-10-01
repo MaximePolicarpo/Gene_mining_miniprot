@@ -327,8 +327,10 @@ OUTDIR/
 │       ├── tmp/                         # raw GFF, candidates, alignment, tree
 │       │   └── ...                      # (removed by --clean-tmp)
 │       ├── <label>.<gene_name>.summary.tsv
-│       ├── <label>.<gene_name>.cds.fa
-│       └── <label>.<gene_name>.prot.fa
+│       ├── <label>.<gene_name>.cds.fa            # confident ingroup calls only
+│       ├── <label>.<gene_name>.prot.fa           # confident ingroup calls only
+│       ├── <label>.<gene_name>.ambiguous.cds.fa  # AMBIGUOUS/OUTGROUP_SUSPECT calls
+│       └── <label>.<gene_name>.ambiguous.prot.fa # AMBIGUOUS/OUTGROUP_SUSPECT calls
 │
 └── all_species_<gene_name>_summary.tsv  # written by run_batch.sh
 ```
@@ -337,7 +339,20 @@ OUTDIR/
 end, strand, best_query, identity, n_exons, cds_len_nt, prot_len_aa,
 internal_stops, gff_frameshift, gff_stopcodon, functional_call, clade_call,
 terminal_branch_length, long_branch_suspect, dist_to_ingroup,
-dist_to_outgroup`.
+dist_to_outgroup`. It lists every locus found, confident or not — only the
+FASTA files are split (see below).
+
+**Why two sets of FASTA files:** `clade_call` is `<gene_name>` for a
+confident ingroup placement, or `AMBIGUOUS(...)` / `OUTGROUP_SUSPECT` when
+the tree placement step couldn't confirm it (see §9). Those aren't
+lower-confidence versions of a real gene — they're sequences the pipeline
+explicitly failed to confirm, usually a distant unrelated homologue picked
+up by the permissive second miniprot pass (§6 step 3). Mixing them into the
+main `cds.fa`/`prot.fa` would make every downstream use of those files (an
+alignment, a tree, a BLAST database) need re-filtering first, so they're
+routed to `*.ambiguous.cds.fa`/`*.ambiguous.prot.fa` instead. Nothing is
+deleted — they're still in `summary.tsv` and in their own FASTA pair — just
+kept out of the files you'd use directly.
 
 ---
 
@@ -388,10 +403,14 @@ actually looking.
    tree viewer) alongside `tmp/placed.aln`, the alignment it was built from.
    This is exactly why `--clean-tmp` deletes `tmp/` only after you're done
    inspecting a run — don't use it until you've checked the tree.
-2. **Always check anything flagged `AMBIGUOUS(...)`, `OUTGROUP_SUSPECT`, or
-   `long_branch_suspect=True`** — these are the pipeline telling you it
-   isn't confident, most often because of the permissive second miniprot
-   pass surfacing a distant, unrelated homologue (see §10).
+2. **`AMBIGUOUS(...)`/`OUTGROUP_SUSPECT` calls are already routed to
+   `*.ambiguous.cds.fa`/`*.ambiguous.prot.fa` (see §7)** rather than the main
+   FASTA files, most often because the permissive second miniprot pass
+   surfaced a distant, unrelated homologue (§6 step 3) — they're kept for
+   transparency, not because they're likely to be real. A confident
+   ingroup call with `long_branch_suspect=True` stays in the main file but
+   still deserves a look: it's a real placement, just an unusually divergent
+   one.
 3. **Treat `functional_partial` as "probably real but incomplete"**, not
    "broken." It usually means the locus continues past the end of whichever
    reference protein produced the best-scoring alignment there (see §10),
